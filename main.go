@@ -114,7 +114,7 @@ func main() {
 	// ── Admin: register device (no auth — called once during provisioning) ──
 	app.Post("/api/register_device", registerDevice)
 
-	log.Fatal(app.Listen(":4001"))
+	log.Fatal(app.Listen(":4002"))
 }
 
 func pushAlarmsToDevice(deviceID int) {
