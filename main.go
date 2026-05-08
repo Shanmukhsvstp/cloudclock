@@ -116,6 +116,51 @@ func main() {
 
 	log.Fatal(app.Listen(":4001"))
 }
+
+func pushAlarmsToDevice(deviceID int) {
+	rows, err := db.Query(`
+        SELECT id, alarm_time, enabled, recurring, recur_type, recur_days
+        FROM alarms WHERE device_id=$1`, deviceID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var alarmList []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var t string
+		var enabled, recurring bool
+		var recurType sql.NullString
+		var recurDays []byte
+		rows.Scan(&id, &t, &enabled, &recurring, &recurType, &recurDays)
+
+		var days []int
+		if recurDays != nil {
+			json.Unmarshal(recurDays, &days)
+		}
+		if days == nil {
+			days = []int{}
+		}
+		alarmList = append(alarmList, map[string]interface{}{
+			"id":         id,
+			"time":       t,
+			"enabled":    enabled,
+			"recurring":  recurring,
+			"recur_type": recurType.String,
+			"recur_days": days,
+		})
+	}
+	if alarmList == nil {
+		alarmList = []map[string]interface{}{}
+	}
+
+	sendToDevice(deviceID, map[string]interface{}{
+		"type":   "sync_alarms",
+		"alarms": alarmList,
+	})
+}
+
 func handleExchangeToken(c *fiber.Ctx) error {
 	var body struct {
 		GoogleID string `json:"google_id"`
@@ -178,7 +223,8 @@ func handleWS(c *websocket.Conn) {
 
 	// On connect: send current settings + alarm sync
 	sendDeviceSettings(deviceID)
-	sendToDevice(deviceID, map[string]interface{}{"type": "sync_alarms"})
+	pushAlarmsToDevice(deviceID)
+	pushAlarmsToDevice(deviceID)
 
 	// Check if this device is already paired
 	var paired bool
@@ -545,6 +591,7 @@ func createAlarm(c *fiber.Ctx) error {
 	}
 
 	sendToDevice(body.DeviceID, map[string]interface{}{"type": "sync_alarms"})
+	pushAlarmsToDevice(body.DeviceID)
 	return c.SendString("ok")
 }
 
@@ -562,7 +609,7 @@ func deleteAlarm(c *fiber.Ctx) error {
 	}
 
 	db.Exec(`DELETE FROM alarms WHERE id=$1`, id)
-	sendToDevice(deviceID, map[string]interface{}{"type": "sync_alarms"})
+	pushAlarmsToDevice(deviceID)
 	return c.SendString("deleted")
 }
 
