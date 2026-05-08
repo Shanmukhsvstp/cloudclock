@@ -1,0 +1,646 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
+
+const byte DNS_PORT = 53;
+
+DNSServer dnsServer;
+WebServer server(80);
+Preferences prefs;
+
+String savedSSID;
+String savedPASS;
+
+// ---------- CONNECTION STATE ----------
+bool isConnecting = false;
+unsigned long connectStartTime = 0;
+const unsigned long CONNECT_TIMEOUT = 15000;
+
+// ---------- SCAN STATE ----------
+int scanResult = 0;
+bool scanDone = false;
+bool scanRequested = false;
+
+// ---------- BEACON ----------
+unsigned long lastBeacon = 0;
+
+// ---------- HTML PAGE ----------
+String generatePage() {
+  String html = R"rawhtml(<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CloudClock Setup</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+
+    :root {
+      --accent:     #FFEE8C;
+      --accent-dim: #c9b94a;
+      --bg:         #0f0f13;
+      --surface:    #1a1a22;
+      --surface2:   #23232f;
+      --border:     #2e2e3d;
+      --text:       #e8e8f0;
+      --text-muted: #7a7a96;
+      --radius:     14px;
+      --success:    #6ee7b7;
+      --danger:     #f87171;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background-image:
+        radial-gradient(ellipse 60% 50% at 50% -10%, rgba(255,238,140,0.08) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 30% at 80% 110%, rgba(255,238,140,0.04) 0%, transparent 60%);
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 420px;
+      box-shadow:
+        0 0 0 1px rgba(255,238,140,0.04),
+        0 24px 64px rgba(0,0,0,0.5),
+        0 4px 16px rgba(0,0,0,0.3);
+      animation: fadeUp 0.4s ease both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .logo-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent) 0%, #e6c93a 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+      box-shadow: 0 4px 16px rgba(255,238,140,0.25);
+    }
+
+    .logo-text {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+      color: var(--text);
+    }
+
+    .logo-text span {
+      color: var(--accent);
+      font-weight: 900;
+    }
+
+    h2 {
+      font-size: 14px;
+      font-weight: 400;
+      color: var(--text-muted);
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+
+    .field {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    select, input[type="password"] {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 15px;
+      padding: 13px 16px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+
+    .select-wrap {
+      position: relative;
+    }
+
+    .select-wrap::after {
+      content: '▾';
+      position: absolute;
+      right: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+      font-size: 14px;
+    }
+
+    select:focus, input[type="password"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(255,238,140,0.12);
+    }
+
+    select option {
+      background: var(--surface2);
+      color: var(--text);
+    }
+
+    .btn-primary {
+      width: 100%;
+      background: var(--accent);
+      color: #111;
+      border: none;
+      border-radius: var(--radius);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 14px;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: opacity 0.2s, transform 0.15s, box-shadow 0.2s;
+      box-shadow: 0 4px 20px rgba(255,238,140,0.25);
+      letter-spacing: 0.1px;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 28px rgba(255,238,140,0.35);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    .btn-secondary {
+      width: 100%;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+      padding: 12px;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: border-color 0.2s, color 0.2s;
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 24px 0;
+    }
+
+    /* Scanning state */
+    .scanning-wrap {
+      text-align: center;
+      padding: 20px 0 8px;
+    }
+
+    .pulse-ring {
+      display: inline-block;
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      border: 3px solid var(--accent);
+      margin-bottom: 20px;
+      position: relative;
+      animation: pulse-ring 1.4s ease infinite;
+    }
+
+    .pulse-ring::after {
+      content: '';
+      position: absolute;
+      inset: 5px;
+      border-radius: 50%;
+      background: rgba(255,238,140,0.15);
+      animation: pulse-fill 1.4s ease infinite;
+    }
+
+    @keyframes pulse-ring {
+      0%   { transform: scale(0.92); opacity: 0.7; }
+      50%  { transform: scale(1);    opacity: 1;   }
+      100% { transform: scale(0.92); opacity: 0.7; }
+    }
+
+    @keyframes pulse-fill {
+      0%   { opacity: 0.3; }
+      50%  { opacity: 0.8; }
+      100% { opacity: 0.3; }
+    }
+
+    .scanning-text {
+      font-size: 15px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .scanning-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      opacity: 0.6;
+      font-family: 'DM Mono', monospace;
+    }
+
+    .footer-note {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+      margin-top: 20px;
+      opacity: 0.6;
+    }
+  </style>
+)rawhtml";
+
+  if (!scanDone) {
+    html += R"rawhtml(
+  <meta http-equiv='refresh' content='2'>
+</head>
+<body>
+  <div class="card">
+    <div class="logo-row">
+      <div class="logo-text"><span>Cloud</span>Clock</div>
+    </div>
+    <div class="scanning-wrap">
+      <div class="pulse-ring"></div>
+      <p class="scanning-text">Scanning for networks...</p>
+      <p class="scanning-sub">This page will refresh automatically</p>
+    </div>
+    <div class="footer-note">Make sure you're connected to CloudClock_Setup</div>
+  </div>
+</body>
+</html>
+)rawhtml";
+    return html;
+  }
+
+  html += R"rawhtml(
+</head>
+<body>
+  <div class="card">
+    <div class="logo-row">
+      <div class="logo-text"><span>Cloud</span>Clock</div>
+    </div>
+    <h2>Connect your device to WiFi to enable time sync and online features.</h2>
+
+    <form action='/save' method='get'>
+      <div class="field">
+        <label>Network</label>
+        <div class="select-wrap">
+          <select name='ssid'>
+)rawhtml";
+
+  for (int i = 0; i < scanResult; i++) {
+    String ssid = WiFi.SSID(i);
+    String rssi = String(WiFi.RSSI(i));
+    String lock = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? " · open" : " · secured";
+    html += "<option value='" + ssid + "'>" + ssid + " (" + rssi + " dBm)" + lock + "</option>";
+  }
+
+  html += R"rawhtml(
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Password</label>
+        <input type="password" name="pass" placeholder="Enter WiFi password">
+      </div>
+
+      <button type="submit" class="btn-primary">Connect</button>
+    </form>
+
+    <div class="divider"></div>
+
+    <button class="btn-secondary" onclick="location.href='/rescan'">↻ &nbsp;Rescan Networks</button>
+
+    <p class="footer-note">CloudClock_Setup · 192.168.4.1</p>
+  </div>
+</body>
+</html>
+)rawhtml";
+
+  return html;
+}
+
+// ---------- CONNECTING PAGE ----------
+String connectingPage() {
+  return R"rawhtml(<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connecting...</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
+    :root {
+      --accent: #FFEE8C;
+      --bg: #0f0f13;
+      --surface: #1a1a22;
+      --border: #2e2e3d;
+      --text: #e8e8f0;
+      --text-muted: #7a7a96;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background-image: radial-gradient(ellipse 60% 50% at 50% -10%, rgba(255,238,140,0.08) 0%, transparent 70%);
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 420px;
+      text-align: center;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+      animation: fadeUp 0.4s ease both;
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .spinner {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      border: 3px solid rgba(255,238,140,0.15);
+      border-top-color: var(--accent);
+      animation: spin 0.9s linear infinite;
+      margin: 0 auto 24px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h3 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    p {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .logo-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 32px;
+    }
+    .logo-icon {
+      width: 36px; height: 36px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #FFEE8C 0%, #e6c93a 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .logo-text { font-size: 18px; font-weight: 600; }
+    .logo-text span { color: var(--accent); font-weight: 900; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo-row">
+      <div class="logo-text"><span>Cloud</span>Clock</div>
+    </div>
+    <div class="spinner"></div>
+    <h3>Connecting to WiFi...</h3>
+    <p>You can close this tab.<br>The setup page will reappear if the connection fails.</p>
+  </div>
+</body>
+</html>)rawhtml";
+}
+
+// ---------- CAPTIVE PORTAL ----------
+void handleCaptivePortal() {
+  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  server.sendHeader("Pragma", "no-cache");
+  server.sendHeader("Expires", "-1");
+  String page = "<html><head>";
+  page += "<meta http-equiv='refresh' content='0;url=http://192.168.4.1/'>";
+  page += "</head><body>Redirecting... ";
+  page += "<a href='http://192.168.4.1/'>Click here</a></body></html>";
+  server.send(511, "text/html", page);
+}
+
+// ---------- HANDLERS ----------
+void handleRoot() {
+  if (!scanRequested && !scanDone) {
+    WiFi.scanNetworks(true);
+    scanRequested = true;
+  }
+  server.send(200, "text/html", generatePage());
+}
+
+void handleRescan() {
+  WiFi.scanDelete();
+  scanDone = false;
+  scanRequested = false;
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
+void handleSave() {
+  String ssid = server.arg("ssid");
+  String pass = server.arg("pass");
+
+  prefs.begin("wifi", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+  prefs.end();
+
+  server.send(200, "text/html", connectingPage());
+
+  delay(100);
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+
+  isConnecting = true;
+  connectStartTime = millis();
+}
+
+// ---------- START AP MODE ----------
+void startAP() {
+  scanDone = false;
+  scanRequested = false;
+  isConnecting = false;
+
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_AP);
+  delay(100);
+
+  WiFi.softAP("CloudClock_Setup");
+  delay(500);
+
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.print("AP IP: ");
+  Serial.println(apIP);
+
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(DNS_PORT, "*", apIP);
+
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/save", HTTP_GET, handleSave);
+  server.on("/rescan", HTTP_GET, handleRescan);
+
+  server.on("/generate_204", HTTP_GET, handleCaptivePortal);
+  server.on("/gen_204", HTTP_GET, handleCaptivePortal);
+  server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortal);
+  server.on("/library/test/success.html", HTTP_GET, handleCaptivePortal);
+
+  server.on("/connecttest.txt", HTTP_GET, []() {
+    server.send(200, "text/plain", "Microsoft Connect Test");
+  });
+  server.on("/ncsi.txt", HTTP_GET, []() {
+    server.send(200, "text/plain", "Microsoft NCSI");
+  });
+  server.on("/redirect", HTTP_GET, handleCaptivePortal);
+  server.on("/success.txt", HTTP_GET, []() {
+    server.send(200, "text/plain", "success");
+  });
+
+  server.onNotFound([]() {
+    handleCaptivePortal();
+  });
+
+  server.begin();
+
+  WiFi.scanNetworks(true);
+  scanRequested = true;
+  scanDone = false;
+
+  Serial.println("AP Mode Started");
+  Serial.println("Connect to: CloudClock_Setup");
+  Serial.println("Open: http://192.168.4.1");
+}
+
+// ---------- TRY SAVED WIFI ----------
+void connectToSavedWiFi() {
+  prefs.begin("wifi", true);
+  savedSSID = prefs.getString("ssid", "");
+  savedPASS = prefs.getString("pass", "");
+  prefs.end();
+
+  if (savedSSID == "") {
+    startAP();
+    return;
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
+
+  Serial.println("Connecting to saved WiFi...");
+
+  int timeout = 15;
+  while (WiFi.status() != WL_CONNECTED && timeout-- > 0) {
+    delay(1000);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected!");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nFailed. Starting AP...");
+    startAP();
+  }
+}
+
+// ---------- SETUP ----------
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  connectToSavedWiFi();
+}
+
+// ---------- LOOP ----------
+void loop() {
+  if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
+    dnsServer.processNextRequest();
+    server.handleClient();
+
+    if (millis() - lastBeacon > 5000) {
+      lastBeacon = millis();
+      WiFi.softAPIP();
+      Serial.printf("AP alive — clients: %d\n", WiFi.softAPgetStationNum());
+    }
+
+    if (scanRequested && !scanDone) {
+      int result = WiFi.scanComplete();
+      if (result >= 0) {
+        scanResult = result;
+        scanDone = true;
+        scanRequested = false;
+        Serial.printf("Scan complete: %d networks found\n", scanResult);
+      }
+    }
+  }
+
+  if (isConnecting) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Connected successfully!");
+      Serial.println(WiFi.localIP());
+      isConnecting = false;
+
+      delay(500);
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+
+    } else if (millis() - connectStartTime > CONNECT_TIMEOUT) {
+      Serial.println("Connection timed out. Restarting AP...");
+      startAP();
+    }
+  }
+}

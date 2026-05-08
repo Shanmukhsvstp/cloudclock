@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/CMakeFiles/bootloader
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/CMakeFiles/bootloader.rule
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/CMakeFiles/bootloader-complete.rule
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+C:/Users/pvksa/OneDrive/Desktop/psssvst/CloudClock/idf/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

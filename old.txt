@@ -1,0 +1,811 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
+#include <Arduino.h>
+#include <HTTPClient.h>
+#include <time.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
+
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold24pt7b.h>
+
+#define SCREEN_WIDTH  240
+#define SCREEN_HEIGHT 240
+
+#define TFT_CLK   12
+#define TFT_MOSI  11
+#define TFT_DC    9
+#define TFT_RST   3
+#define TFT_CS    -1
+
+#define ST77XX_LIGHTGREY 0x8410
+#define ST77XX_ACCENT    0xFF8E  // #FFEE8C in RGB565
+
+// ── Icons (24x24) ──────────────────────────────────────────────────────────────
+const unsigned char wifiIcon_24x24[] PROGMEM = {
+  0x00,0x00,0x00,0x00,0x00,0x00,0x03,0xff,0xc0,0x0f,0xff,0xf0,0x1f,0x00,0xf8,0x3c,
+  0x00,0x3c,0x78,0x00,0x1e,0x60,0xff,0x06,0x03,0xff,0xc0,0x07,0x81,0xe0,0x0e,0x00,
+  0x70,0x1c,0x00,0x38,0x18,0x00,0x18,0x00,0x7e,0x00,0x00,0xff,0x00,0x00,0xc3,0x00,
+  0x01,0x81,0x80,0x01,0x00,0x80,0x00,0x00,0x00,0x00,0x3c,0x00,0x00,0x3c,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00
+};
+const unsigned char wifiOffIcon_24x24[] PROGMEM = {
+  0x00,0x00,0x00,0x00,0x00,0x02,0x03,0xff,0xc6,0x0f,0xff,0xfc,0x1f,0x00,0xf8,0x3c,
+  0x00,0x7c,0x78,0x00,0xbe,0x60,0xff,0x86,0x03,0xff,0xc0,0x07,0x83,0xe0,0x0e,0x07,
+  0x70,0x1c,0x0e,0x38,0x18,0x1c,0x18,0x00,0x78,0x00,0x00,0xf0,0x00,0x01,0xc3,0x00,
+  0x03,0x81,0x80,0x07,0x00,0x80,0x0e,0x00,0x00,0x1c,0x3c,0x00,0x38,0x3c,0x00,0x70,
+  0x00,0x00,0x00,0x00,0x00
+};
+const unsigned char cloudTickIcon_24x24[] PROGMEM = {
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3c,0x00,0x00,0x7e,0x00,0x00,0xc3,0x00,0x01,
+  0x81,0x80,0x01,0x81,0x80,0x0f,0x81,0xe0,0x1f,0x81,0xf0,0x38,0x81,0x18,0x30,0x81,
+  0x0c,0x70,0x83,0x0e,0x60,0x86,0x06,0xe0,0x8c,0x07,0xc0,0x98,0x03,0xc0,0xf0,0x03,
+  0xc0,0x60,0x03,0x60,0x00,0x06,0x7f,0xff,0xfe,0x3f,0xff,0xfc,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00
+};
+const unsigned char cloudCrossIcon_24x24[] PROGMEM = {
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3c,0x00,0x00,0x7e,0x00,0x00,0xc3,0x00,0x01,
+  0x81,0x80,0x01,0x81,0x80,0x0f,0x81,0xe0,0x1f,0xc3,0xf0,0x38,0x66,0x18,0x30,0x3c,
+  0x0c,0x70,0x18,0x0e,0x60,0x3c,0x06,0xe0,0x66,0x07,0xc0,0xc3,0x03,0xc0,0x81,0x03,
+  0xc0,0x00,0x03,0x60,0x00,0x06,0x7f,0xff,0xfe,0x3f,0xff,0xfc,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00
+};
+
+Adafruit_ST7789 display = Adafruit_ST7789(&SPI, TFT_CS, TFT_DC, TFT_RST);
+
+// ── WiFi AP / Captive Portal ───────────────────────────────────────────────────
+const byte DNS_PORT = 53;
+DNSServer  dnsServer;
+WebServer  server(80);
+Preferences prefs;
+
+String savedSSID, savedPASS;
+bool inSetupMode = false, isConnecting = false;
+unsigned long connectStartTime = 0;
+const unsigned long CONNECT_TIMEOUT = 15000;
+int scanResult = 0;
+bool scanDone = false, scanRequested = false;
+
+// ── App State ─────────────────────────────────────────────────────────────────
+const char* wsHost = "165.22.208.107";
+const int   wsPort = 4001;
+const char* wsPath = "/ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkZXZpY2VfaWQiOjF9.W_fyTwdf3mmXql27QnJD5voFm_MGqQKxlr4PkVRmftU";
+const int   deviceId = 1;
+const int   buzzerPin = 6;
+const unsigned long ALARM_RING_DURATION = 30000;
+
+// ── Device modes ──────────────────────────────────────────────────────────────
+enum DeviceMode { MODE_BOOT, MODE_PAIRING, MODE_NORMAL };
+DeviceMode currentMode = MODE_BOOT;
+
+// ── Pairing state ─────────────────────────────────────────────────────────────
+char pairingCode[7]        = "";
+unsigned long pairingCodeExpiry = 0;     // millis() deadline
+bool pairingCodeRequested  = false;
+unsigned long lastCodeRefresh = 0;
+const char* pairingURL     = "cloudclock.app/pair";  // shown on screen
+
+// ── Settings (synced from backend) ───────────────────────────────────────────
+int  hourFormat    = 24;         // 12 or 24
+char deviceTimezone[48] = "Asia/Kolkata";
+
+// Simple timezone offset map (UTC offset in seconds × sign)
+// Backend sends IANA timezone strings; we map common ones
+struct TZEntry { const char* name; long offset; };
+const TZEntry TZ_MAP[] = {
+  {"UTC",             0},
+  {"Asia/Kolkata",    19800},
+  {"Asia/Dubai",      14400},
+  {"Asia/Singapore",  28800},
+  {"Asia/Tokyo",      32400},
+  {"Europe/London",   0},
+  {"Europe/Paris",    3600},
+  {"Europe/Berlin",   3600},
+  {"America/New_York",-18000},
+  {"America/Chicago", -21600},
+  {"America/Denver",  -25200},
+  {"America/Los_Angeles",-28800},
+  {"America/Sao_Paulo",-10800},
+  {"Australia/Sydney", 36000},
+};
+const int TZ_MAP_SIZE = sizeof(TZ_MAP) / sizeof(TZ_MAP[0]);
+
+long getOffsetForTimezone(const char* tz) {
+  for (int i = 0; i < TZ_MAP_SIZE; i++) {
+    if (strcmp(TZ_MAP[i].name, tz) == 0) return TZ_MAP[i].offset;
+  }
+  return 19800; // fallback: IST
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+WebSocketsClient ws;
+
+// ── Alarms ───────────────────────────────────────────────────────────────────
+#define MAX_ALARMS 20
+struct Alarm {
+  int  id, hour, minute;
+  bool enabled, recurring;
+  char recurType[8];
+  bool recurDays[7];
+};
+Alarm alarms[MAX_ALARMS];
+int   alarmCount = 0;
+volatile bool updatingAlarms = false;
+
+// ── Display State ────────────────────────────────────────────────────────────
+struct Connections { bool cloud, wifi; };
+struct { Connections prev, cur; } DOut;
+
+bool    isReady           = false;
+int     spinnerAngle      = 0;
+bool    bootLogoDrawn     = false;
+bool    lastFooterActive  = false;
+unsigned long lastFooterAnimTime = 0;
+int     footerAnimAngle   = 0;
+char    lastBootMsg[64]   = "";
+
+int   currentDisplayedMin     = -1;
+int   currentDisplayedAlarmIdx = -2;
+bool  currentDisplayedBuzzer  = false;
+bool  pairingScreenDrawn      = false;
+char  lastDrawnCode[7]        = "";
+
+// ── Buzzer ───────────────────────────────────────────────────────────────────
+bool   buzzerActive  = false;
+unsigned long buzzerStart     = 0;
+int    lastFiredAlarmId       = -1;
+int    lastFiredAlarmMinute   = -1;
+
+unsigned long lastHeartbeat  = 0;
+unsigned long lastAlarmCheck = 0;
+
+// =============================================================================
+// CAPTIVE PORTAL HTML
+// =============================================================================
+String generatePage() {
+  String html = R"rawhtml(<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CloudClock Setup</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+:root{--accent:#FFEE8C;--bg:#0f0f13;--surface:#1a1a22;--surface2:#23232f;--border:#2e2e3d;--text:#e8e8f0;--text-muted:#7a7a96;--radius:14px;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:40px 36px;width:100%;max-width:420px;}
+.logo-row{display:flex;align-items:center;gap:12px;margin-bottom:28px;}
+.logo-text{font-size:20px;font-weight:600;}.logo-text span{color:var(--accent);font-weight:900;}
+h2{font-size:14px;font-weight:400;color:var(--text-muted);margin-bottom:28px;}
+.field{margin-bottom:16px;}
+label{display:block;font-size:11px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;}
+select,input[type="password"]{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:15px;padding:13px 16px;outline:none;}
+.btn-primary{width:100%;background:var(--accent);color:#111;border:none;border-radius:var(--radius);font-size:15px;font-weight:600;padding:14px;cursor:pointer;margin-top:8px;}
+.btn-secondary{width:100%;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:var(--radius);font-size:14px;font-weight:500;padding:12px;cursor:pointer;margin-top:10px;}
+.divider{height:1px;background:var(--border);margin:24px 0;}
+</style>)rawhtml";
+
+  if (!scanDone) {
+    html += R"rawhtml(<meta http-equiv='refresh' content='2'></head><body>
+<div class="card"><div class="logo-row"><div class="logo-text"><span>Cloud</span>Clock</div></div>
+<p style="color:var(--text-muted);font-size:14px;">Scanning for networks...</p></div></body></html>)rawhtml";
+    return html;
+  }
+
+  html += R"rawhtml(</head><body><div class="card">
+<div class="logo-row"><div class="logo-text"><span>Cloud</span>Clock</div></div>
+<h2>Connect your device to WiFi to enable time sync and cloud features.</h2>
+<form action='/save' method='get'>
+<div class="field"><label>Network</label><select name='ssid'>)rawhtml";
+  for (int i = 0; i < scanResult; i++) {
+    html += "<option value='" + WiFi.SSID(i) + "'>" + WiFi.SSID(i) + "</option>";
+  }
+  html += R"rawhtml(</select></div>
+<div class="field"><label>Password</label><input type="password" name="pass" placeholder="Enter WiFi password"></div>
+<button type="submit" class="btn-primary">Connect</button>
+</form>
+<div class="divider"></div>
+<button class="btn-secondary" onclick="location.href='/rescan'">↻ &nbsp;Rescan Networks</button>
+</div></body></html>)rawhtml";
+  return html;
+}
+
+void handleCaptivePortal() { server.sendHeader("Location","http://192.168.4.1/",true); server.send(302,"text/plain",""); }
+void handleRoot()   { if (!scanRequested&&!scanDone){WiFi.scanNetworks(true);scanRequested=true;} server.send(200,"text/html",generatePage()); }
+void handleRescan() { WiFi.scanDelete();scanDone=false;scanRequested=false; server.sendHeader("Location","/",true);server.send(302,"text/plain",""); }
+void handleSave()   {
+  prefs.begin("wifi",false);
+  prefs.putString("ssid",server.arg("ssid"));
+  prefs.putString("pass",server.arg("pass"));
+  prefs.end();
+  server.send(200,"text/html","<html><body style='background:#0f0f13;color:#e8e8f0;font-family:sans-serif;text-align:center;padding:20vh'><h3>Connecting...</h3><p>You can close this tab.</p></body></html>");
+  delay(100);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin(server.arg("ssid").c_str(),server.arg("pass").c_str());
+  isConnecting=true; connectStartTime=millis();
+}
+
+// =============================================================================
+// UI HELPERS
+// =============================================================================
+void printCentered(const char* text, int y, const GFXfont* font, uint16_t color) {
+  display.setFont(font);
+  display.setTextColor(color);
+  int16_t x1,y1; uint16_t w,h;
+  display.getTextBounds(text,0,y,&x1,&y1,&w,&h);
+  display.setCursor((SCREEN_WIDTH-w)/2,y);
+  display.print(text);
+}
+
+void drawLogo(int y) {
+  display.setFont(&FreeSansBold12pt7b);
+  int16_t x1,y1; uint16_t wC,hC;
+  display.getTextBounds("Cloud",0,y,&x1,&y1,&wC,&hC);
+  display.setFont(&FreeSans12pt7b);
+  uint16_t wK,hK;
+  display.getTextBounds("Clock",0,y,&x1,&y1,&wK,&hK);
+  int startX=(SCREEN_WIDTH-wC-wK)/2;
+  display.setFont(&FreeSansBold12pt7b); display.setTextColor(ST77XX_ACCENT);
+  display.setCursor(startX,y); display.print("Cloud");
+  display.setFont(&FreeSans12pt7b); display.setTextColor(ST77XX_WHITE);
+  display.setCursor(startX+wC,y); display.print("Clock");
+}
+
+void showBoot(int angle, const char* statusMsg) {
+  if (!bootLogoDrawn) {
+    display.fillScreen(ST77XX_BLACK);
+    drawLogo(100);
+    bootLogoDrawn=true; strcpy(lastBootMsg,"");
+  }
+  display.fillRect(104,134,32,32,ST77XX_BLACK);
+  for (int i=0;i<90;i+=18) {
+    float rad=(angle+i)*0.0174533f;
+    int x=120+cos(rad)*12, y=150+sin(rad)*12;
+    display.fillCircle(x,y,2,ST77XX_ACCENT);
+  }
+  if (strcmp(lastBootMsg,statusMsg)!=0) {
+    display.fillRect(0,180,240,30,ST77XX_BLACK);
+    display.setFont(NULL); display.setTextSize(1); display.setTextColor(ST77XX_LIGHTGREY);
+    int16_t x1,y1; uint16_t w,h;
+    display.getTextBounds(statusMsg,0,0,&x1,&y1,&w,&h);
+    display.setCursor((SCREEN_WIDTH-w)/2,190); display.print(statusMsg);
+    strcpy(lastBootMsg,statusMsg);
+  }
+}
+
+// =============================================================================
+// PAIRING SCREEN
+// =============================================================================
+void drawPairingScreen(const char* code) {
+  // Only redraw if code changed
+  if (strcmp(lastDrawnCode, code) == 0 && pairingScreenDrawn) return;
+
+  display.fillScreen(ST77XX_BLACK);
+
+  // Logo small at top
+  drawLogo(22);
+
+  // Divider
+  display.drawFastHLine(20, 32, 200, ST77XX_LIGHTGREY);
+
+  // "PAIR YOUR CLOCK" label
+  display.setFont(NULL); display.setTextSize(1);
+  display.setTextColor(ST77XX_LIGHTGREY);
+  const char* label = "PAIR YOUR CLOCK";
+  int16_t x1,y1; uint16_t w,h;
+  display.getTextBounds(label,0,0,&x1,&y1,&w,&h);
+  display.setCursor((SCREEN_WIDTH-w)/2, 44);
+  display.print(label);
+
+  // Code box background
+  display.fillRoundRect(30, 60, 180, 64, 10, 0x1082); // dark surface color
+
+  // Code in large bold font (centered)
+  display.setFont(&FreeSansBold24pt7b);
+  display.setTextColor(ST77XX_ACCENT);
+  int16_t cx1,cy1; uint16_t cw,ch;
+  display.getTextBounds(code,0,0,&cx1,&cy1,&cw,&ch);
+  display.setCursor((SCREEN_WIDTH-cw)/2, 105);
+  display.print(code);
+
+  // Expiry hint
+  display.setFont(NULL); display.setTextSize(1);
+  display.setTextColor(ST77XX_LIGHTGREY);
+  const char* exp = "Code expires in 10 min";
+  display.getTextBounds(exp,0,0,&x1,&y1,&w,&h);
+  display.setCursor((SCREEN_WIDTH-w)/2, 138);
+  display.print(exp);
+
+  // Instruction line 1
+  display.setTextColor(0xC618); // mid-grey
+  const char* inst1 = "Open your browser and go to:";
+  display.getTextBounds(inst1,0,0,&x1,&y1,&w,&h);
+  display.setCursor((SCREEN_WIDTH-w)/2, 162);
+  display.print(inst1);
+
+  // URL in accent
+  display.setTextColor(ST77XX_ACCENT);
+  display.getTextBounds(pairingURL,0,0,&x1,&y1,&w,&h);
+  display.setCursor((SCREEN_WIDTH-w)/2, 176);
+  display.print(pairingURL);
+
+  const char* inst2 = "Enter the code above to pair";
+  display.setTextColor(ST77XX_LIGHTGREY);
+  display.getTextBounds(inst2,0,0,&x1,&y1,&w,&h);
+  display.setCursor((SCREEN_WIDTH-w)/2, 192);
+  display.print(inst2);
+
+  // Divider
+  display.drawFastHLine(20, 206, 200, 0x2945);
+
+  // WiFi/Cloud status row
+  DOut.prev.wifi  = !DOut.cur.wifi;   // force icon redraw
+  DOut.prev.cloud = !DOut.cur.cloud;
+
+  pairingScreenDrawn = true;
+  strcpy(lastDrawnCode, code);
+}
+
+// =============================================================================
+// PAIRING CODE FETCH
+// =============================================================================
+void fetchPairingCode() {
+  HTTPClient http;
+  String url = String("http://") + wsHost + ":" + String(wsPort) + "/api/pair/code";
+  http.begin(url);
+  // Use device JWT in Authorization header
+  http.addHeader("Authorization", String("Bearer ") + String(wsPath).substring(String(wsPath).indexOf("token=") + 6));
+  int code = http.GET();
+  if (code != 200) { http.end(); return; }
+
+  String payload = http.getString();
+  http.end();
+
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, payload)) return;
+
+  const char* c = doc["code"] | "";
+  if (strlen(c) == 6) {
+    strncpy(pairingCode, c, 7);
+    pairingCodeExpiry = millis() + 9 * 60 * 1000; // 9 min local countdown
+    pairingCodeRequested = true;
+    currentMode = MODE_PAIRING;
+    pairingScreenDrawn = false; // force redraw
+  }
+}
+
+// =============================================================================
+// ALARM & SETTINGS HELPERS
+// =============================================================================
+void fetchAlarms() {
+  HTTPClient http;
+  String url = String("http://") + wsHost + ":" + String(wsPort) + "/api/alarms/" + String(deviceId);
+  http.begin(url);
+  // Device doesn't use user auth for alarm fetch — backend uses device JWT
+  // (You can add device-level alarm fetch endpoint, or rely on WS sync)
+  http.end();
+}
+
+void applyTimezone() {
+  long offset = getOffsetForTimezone(deviceTimezone);
+  configTime(offset, 0, "pool.ntp.org", "time.nist.gov");
+}
+
+void syncNTP() {
+  applyTimezone();
+  struct tm t;
+  unsigned long startWait = millis();
+  while (millis()-startWait < 20000) {
+    showBoot(spinnerAngle, "Syncing Time...");
+    spinnerAngle=(spinnerAngle+16)%360;
+    if (getLocalTime(&t,10)) return;
+    delay(25);
+  }
+}
+
+// ─── Alarm time format helper ─────────────────────────────────────────────────
+// Returns formatted time string respecting hourFormat
+void formatTimeStr(int hour, int minute, char* buf, int bufSize) {
+  if (hourFormat == 12) {
+    const char* ampm = hour >= 12 ? "PM" : "AM";
+    int h12 = hour % 12;
+    if (h12 == 0) h12 = 12;
+    snprintf(buf, bufSize, "%d:%02d %s", h12, minute, ampm);
+  } else {
+    snprintf(buf, bufSize, "%02d:%02d", hour, minute);
+  }
+}
+
+// =============================================================================
+// WebSocket EVENT
+// =============================================================================
+void setWifiStatus(bool v)  { DOut.cur.wifi  = v; }
+void setCloudStatus(bool v) { DOut.cur.cloud = v; }
+
+void sendBuzzerStatus(bool state) {
+  StaticJsonDocument<128> doc;
+  doc["type"]="buzzer_status"; doc["value"]=state;
+  String j; serializeJson(doc,j); ws.sendTXT(j);
+}
+void buzzerOn()  { digitalWrite(buzzerPin,HIGH); buzzerActive=true; buzzerStart=millis(); sendBuzzerStatus(true); }
+void buzzerOff() { digitalWrite(buzzerPin,LOW);  buzzerActive=false; sendBuzzerStatus(false); }
+
+void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      setCloudStatus(true);
+      break;
+    case WStype_DISCONNECTED:
+      setCloudStatus(false);
+      break;
+    case WStype_TEXT: {
+      StaticJsonDocument<512> doc;
+      if (deserializeJson(doc, payload)) return;
+      const char* msgType = doc["type"] | "";
+
+      if (strcmp(msgType,"buzzer")==0) {
+        (doc["value"]|false) ? buzzerOn() : buzzerOff();
+
+      } else if (strcmp(msgType,"alarm_fire")==0) {
+        buzzerOn();
+
+      } else if (strcmp(msgType,"sync_alarms")==0) {
+        // Fetch alarms via HTTP
+        HTTPClient http;
+        String url = String("http://") + wsHost + ":" + String(wsPort) + "/api/alarms/" + String(deviceId);
+        http.begin(url);
+        if (http.GET()==200) {
+          String body = http.getString();
+          DynamicJsonDocument adoc(4096);
+          if (!deserializeJson(adoc,body)) {
+            JsonArray arr = adoc.as<JsonArray>();
+            updatingAlarms=true; alarmCount=0;
+            for (JsonObject obj : arr) {
+              if (alarmCount>=MAX_ALARMS) break;
+              Alarm& a=alarms[alarmCount];
+              a.id=obj["id"]|0; a.enabled=obj["enabled"]|true;
+              const char* t=obj["time"]|"";
+              if (sscanf(t,"%d:%d",&a.hour,&a.minute)!=2) continue;
+              a.recurring=obj["recurring"]|false;
+              strncpy(a.recurType,obj["recur_type"]|"",sizeof(a.recurType)-1);
+              memset(a.recurDays,0,sizeof(a.recurDays));
+              if (obj.containsKey("recur_days")&&!obj["recur_days"].isNull()) {
+                JsonArray days=obj["recur_days"].as<JsonArray>();
+                for (int d:days) if (d>=0&&d<=6) a.recurDays[d]=true;
+              }
+              alarmCount++;
+            }
+            updatingAlarms=false;
+            currentDisplayedAlarmIdx=-2;
+          }
+        }
+        http.end();
+
+      } else if (strcmp(msgType,"sync_settings")==0) {
+        int newFmt = doc["hour_format"]|24;
+        const char* newTZ = doc["timezone"]|"Asia/Kolkata";
+        if (newFmt!=hourFormat || strcmp(newTZ,deviceTimezone)!=0) {
+          hourFormat=newFmt;
+          strncpy(deviceTimezone,newTZ,sizeof(deviceTimezone)-1);
+          prefs.begin("settings",false);
+          prefs.putInt("hour_format",hourFormat);
+          prefs.putString("timezone",deviceTimezone);
+          prefs.end();
+          applyTimezone();
+          currentDisplayedMin=-1; // force clock redraw
+        }
+
+      } else if (strcmp(msgType,"pairing_complete")==0) {
+        prefs.begin("settings",false);
+        prefs.putBool("paired",true);
+        prefs.end();
+        currentMode=MODE_NORMAL;
+        pairingScreenDrawn=false;
+        // Full redraw to normal UI
+        display.fillScreen(ST77XX_BLACK);
+        currentDisplayedMin=-1;
+        currentDisplayedAlarmIdx=-2;
+        DOut.prev.wifi=!DOut.cur.wifi;
+        DOut.prev.cloud=!DOut.cur.cloud;
+
+      } else if (strcmp(msgType,"request_pairing_code")==0) {
+        // Backend says we need to pair
+        bool alreadyPaired;
+        prefs.begin("settings",true);
+        alreadyPaired=prefs.getBool("paired",false);
+        prefs.end();
+        if (!alreadyPaired) {
+          fetchPairingCode();
+        }
+      }
+      break;
+    }
+    default: break;
+  }
+}
+
+// =============================================================================
+// ALARM CHECK
+// =============================================================================
+void checkAlarms() {
+  struct tm t; if (!getLocalTime(&t)) return;
+  int minuteNow=t.tm_hour*60+t.tm_min;
+  for (int i=0;i<alarmCount;i++) {
+    Alarm& a=alarms[i];
+    if (!a.enabled||a.hour!=t.tm_hour||a.minute!=t.tm_min) continue;
+    if (a.id==lastFiredAlarmId&&minuteNow==lastFiredAlarmMinute) continue;
+    bool fire=false;
+    if (!a.recurring||strcmp(a.recurType,"daily")==0) fire=true;
+    else if (strcmp(a.recurType,"weekly")==0) fire=a.recurDays[t.tm_wday];
+    if (fire) { lastFiredAlarmId=a.id; lastFiredAlarmMinute=minuteNow; buzzerOn(); break; }
+  }
+}
+
+int getNextUpcomingAlarmIndex() {
+  if (updatingAlarms) return -1;
+  struct tm t; if (!getLocalTime(&t)) return -1;
+  int nowMins=t.tm_hour*60+t.tm_min, minDiff=999999, nextIdx=-1;
+  for (int i=0;i<alarmCount;i++) {
+    Alarm& a=alarms[i]; if (!a.enabled) continue;
+    int alMins=a.hour*60+a.minute;
+    if (!a.recurring||strcmp(a.recurType,"daily")==0) {
+      int diff=alMins-nowMins; if (diff<=0) diff+=1440;
+      if (diff<minDiff){minDiff=diff;nextIdx=i;}
+    } else if (strcmp(a.recurType,"weekly")==0) {
+      for (int off=0;off<7;off++) {
+        int checkDay=(t.tm_wday+off)%7;
+        if (a.recurDays[checkDay]) {
+          int diff=alMins-nowMins+(off*1440);
+          if (diff>0&&diff<minDiff){minDiff=diff;nextIdx=i;break;}
+          else if (off==0&&diff<=0){int nd=diff+10080;if(nd<minDiff){minDiff=nd;nextIdx=i;}}
+        }
+      }
+    }
+  }
+  return nextIdx;
+}
+
+// =============================================================================
+// DISPLAY UI (CORE 0)
+// =============================================================================
+void updateFooter() {
+  bool needsFooter = !DOut.cur.cloud || !DOut.cur.wifi;
+  if (needsFooter) {
+    if (millis()-lastFooterAnimTime>25) {
+      lastFooterAnimTime=millis();
+      footerAnimAngle=(footerAnimAngle+16)%360;
+      if (!lastFooterActive) display.fillRect(0,220,240,20,ST77XX_BLACK);
+      display.fillRect(10,220,20,20,ST77XX_BLACK);
+      for (int i=0;i<90;i+=22){
+        float rad=(footerAnimAngle+i)*0.0174533f;
+        int x=20+cos(rad)*6,y=230+sin(rad)*6;
+        display.fillCircle(x,y,1,ST77XX_ACCENT);
+      }
+      display.setFont(NULL); display.setTextSize(1);
+      display.setTextColor(ST77XX_LIGHTGREY,ST77XX_BLACK);
+      display.setCursor(35,226);
+      if (!DOut.cur.wifi) display.print("Connecting to WiFi...   ");
+      else                display.print("Connecting to Cloud...  ");
+      lastFooterActive=true;
+    }
+  } else if (lastFooterActive) {
+    display.fillRect(0,220,240,20,ST77XX_BLACK);
+    lastFooterActive=false;
+  }
+}
+
+void updateIcons() {
+  if (DOut.cur.wifi!=DOut.prev.wifi || DOut.cur.cloud!=DOut.prev.cloud) {
+    display.fillRect(170,5,70,30,ST77XX_BLACK);
+    if (DOut.cur.wifi) display.drawBitmap(210,10,wifiIcon_24x24,24,24,ST77XX_WHITE);
+    else               display.drawBitmap(210,10,wifiOffIcon_24x24,24,24,ST77XX_ACCENT);
+    if (DOut.cur.cloud) display.drawBitmap(180,10,cloudTickIcon_24x24,24,24,ST77XX_GREEN);
+    else                display.drawBitmap(180,10,cloudCrossIcon_24x24,24,24,ST77XX_RED);
+    DOut.prev=DOut.cur;
+  }
+}
+
+void updateNormalUI() {
+  updateIcons();
+
+  struct tm t;
+  if (getLocalTime(&t,10)) {
+    if (t.tm_min!=currentDisplayedMin || currentDisplayedMin==-1) {
+      display.fillRect(0,60,240,60,ST77XX_BLACK);
+      char timeStr[16];
+      if (hourFormat==12) {
+        int h=t.tm_hour%12; if(h==0)h=12;
+        snprintf(timeStr,sizeof(timeStr),"%d:%02d %s",h,t.tm_min,t.tm_hour>=12?"PM":"AM");
+      } else {
+        snprintf(timeStr,sizeof(timeStr),"%02d:%02d",t.tm_hour,t.tm_min);
+      }
+      printCentered(timeStr,110,&FreeSansBold24pt7b,ST77XX_WHITE);
+      currentDisplayedMin=t.tm_min; currentDisplayedAlarmIdx=-2;
+    }
+  }
+
+  if (buzzerActive!=currentDisplayedBuzzer) {
+    display.fillRect(0,130,240,80,ST77XX_BLACK);
+    if (buzzerActive) printCentered("BUZZER ON",180,&FreeSans12pt7b,ST77XX_ACCENT);
+    else currentDisplayedAlarmIdx=-2;
+    currentDisplayedBuzzer=buzzerActive;
+  }
+
+  if (!buzzerActive) {
+    int nextIdx=getNextUpcomingAlarmIndex();
+    if (nextIdx!=currentDisplayedAlarmIdx) {
+      display.fillRect(0,130,240,80,ST77XX_BLACK);
+      if (nextIdx!=-1) {
+        printCentered("Next Alarm",160,&FreeSans9pt7b,ST77XX_ACCENT);
+        char buf[16];
+        formatTimeStr(alarms[nextIdx].hour,alarms[nextIdx].minute,buf,sizeof(buf));
+        printCentered(buf,200,&FreeSans12pt7b,ST77XX_WHITE);
+      } else {
+        printCentered("No Alarms",180,&FreeSans12pt7b,ST77XX_LIGHTGREY);
+      }
+      currentDisplayedAlarmIdx=nextIdx;
+    }
+  }
+}
+
+void updatePairingUI() {
+  updateIcons();
+  if (pairingCode[0]!=0) {
+    drawPairingScreen(pairingCode);
+  } else {
+    // Show "requesting code..." if we haven't got one yet
+    if (!pairingScreenDrawn) {
+      display.fillScreen(ST77XX_BLACK);
+      drawLogo(22);
+      printCentered("Requesting pairing code...",140,NULL,ST77XX_LIGHTGREY);
+      pairingScreenDrawn=true;
+    }
+  }
+}
+
+void uiTaskCode(void* parameter) {
+  for (;;) {
+    if      (currentMode==MODE_NORMAL)  updateNormalUI();
+    else if (currentMode==MODE_PAIRING) updatePairingUI();
+    updateFooter();
+    delay(10);
+  }
+}
+
+// =============================================================================
+// AP MODE
+// =============================================================================
+void startAP() {
+  inSetupMode=true; scanDone=false; scanRequested=false; isConnecting=false;
+  WiFi.disconnect(true); delay(100);
+  WiFi.mode(WIFI_AP); WiFi.softAP("CloudClock_Setup"); delay(500);
+  IPAddress apIP=WiFi.softAPIP();
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(DNS_PORT,"*",apIP);
+  server.on("/",HTTP_GET,handleRoot);
+  server.on("/save",HTTP_GET,handleSave);
+  server.on("/rescan",HTTP_GET,handleRescan);
+  server.on("/generate_204",HTTP_GET,handleCaptivePortal);
+  server.onNotFound([](){handleCaptivePortal();});
+  server.begin();
+  WiFi.scanNetworks(true); scanRequested=true;
+
+  bootLogoDrawn=false;
+  display.fillScreen(ST77XX_BLACK);
+  drawLogo(50);
+  printCentered("Setup Required",80,&FreeSans9pt7b,ST77XX_WHITE);
+  display.setFont(NULL); display.setTextColor(ST77XX_ACCENT);
+  display.setCursor(20,130); display.print("1. Connect to WiFi:");
+  display.setTextColor(ST77XX_WHITE);
+  display.setCursor(20,145); display.print("   CloudClock_Setup");
+  display.setTextColor(ST77XX_ACCENT);
+  display.setCursor(20,175); display.print("2. Open Browser:");
+  display.setTextColor(ST77XX_WHITE);
+  display.setCursor(20,190); display.print("   http://192.168.4.1");
+}
+
+void processAPLoop() {
+  while (inSetupMode) {
+    dnsServer.processNextRequest(); server.handleClient();
+    if (scanRequested&&!scanDone) {
+      int r=WiFi.scanComplete(); if (r>=0){scanResult=r;scanDone=true;scanRequested=false;}
+    }
+    if (isConnecting) {
+      showBoot(spinnerAngle,"Testing Connection...");
+      spinnerAngle=(spinnerAngle+16)%360; delay(25);
+      if (WiFi.status()==WL_CONNECTED){ delay(500); WiFi.softAPdisconnect(true); WiFi.mode(WIFI_STA); inSetupMode=false; }
+      else if (millis()-connectStartTime>CONNECT_TIMEOUT) startAP();
+    } else delay(10);
+  }
+}
+
+// =============================================================================
+// SETUP + LOOP
+// =============================================================================
+void initVariables() {
+  DOut.cur.wifi=false; DOut.cur.cloud=false;
+  DOut.prev.wifi=true;  DOut.prev.cloud=true;
+}
+
+void setup() {
+  Serial.begin(115200); delay(500);
+  initVariables();
+
+  SPI.begin(TFT_CLK,-1,TFT_MOSI,TFT_CS);
+  display.init(240,240,SPI_MODE3);
+  display.setRotation(2);
+  display.fillScreen(ST77XX_BLACK);
+
+  // Load saved settings
+  prefs.begin("settings",true);
+  hourFormat = prefs.getInt("hour_format",24);
+  String tz  = prefs.getString("timezone","Asia/Kolkata");
+  bool pairedSaved = prefs.getBool("paired",false);
+  prefs.end();
+  strncpy(deviceTimezone,tz.c_str(),sizeof(deviceTimezone)-1);
+
+  // WiFi connect / AP setup
+  prefs.begin("wifi",true);
+  savedSSID=prefs.getString("ssid","");
+  savedPASS=prefs.getString("pass","");
+  prefs.end();
+
+  if (savedSSID=="") {
+    startAP();
+  } else {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(savedSSID.c_str(),savedPASS.c_str());
+    char msg[64]; snprintf(msg,sizeof(msg),"Connecting to %s...",savedSSID.c_str());
+    unsigned long t=millis();
+    while (WiFi.status()!=WL_CONNECTED&&millis()-t<15000) {
+      showBoot(spinnerAngle,msg);
+      spinnerAngle=(spinnerAngle+16)%360; delay(25);
+    }
+    if (WiFi.status()!=WL_CONNECTED) startAP();
+  }
+  if (inSetupMode) processAPLoop();
+
+  setWifiStatus(true);
+  bootLogoDrawn=false;
+  display.fillScreen(ST77XX_BLACK);
+
+  pinMode(buzzerPin,OUTPUT); digitalWrite(buzzerPin,LOW);
+  syncNTP();
+
+  // Start WebSocket
+  ws.begin(wsHost,wsPort,wsPath);
+  ws.onEvent(webSocketEvent);
+  ws.setReconnectInterval(5000);
+
+  // Set initial mode based on paired status
+  if (pairedSaved) {
+    currentMode=MODE_NORMAL;
+  } else {
+    // Will fetch pairing code once WS connects and backend sends request_pairing_code
+    currentMode=MODE_PAIRING;
+    fetchPairingCode(); // try immediately too
+  }
+
+  // Start UI task on core 0
+  xTaskCreatePinnedToCore(uiTaskCode,"UI Task",10000,NULL,1,NULL,0);
+}
+
+void loop() {
+  ws.loop();
+  setWifiStatus(WiFi.status()==WL_CONNECTED);
+
+  unsigned long now=millis();
+  if (now-lastHeartbeat>10000) { ws.sendTXT("{\"type\":\"heartbeat\"}"); lastHeartbeat=now; }
+  if (now-lastAlarmCheck>20000) { checkAlarms(); lastAlarmCheck=now; }
+  if (buzzerActive&&(now-buzzerStart>ALARM_RING_DURATION)) buzzerOff();
+
+  // Refresh pairing code before it expires
+  if (currentMode==MODE_PAIRING && pairingCodeExpiry>0 && millis()>pairingCodeExpiry-60000) {
+    fetchPairingCode();
+  }
+}
