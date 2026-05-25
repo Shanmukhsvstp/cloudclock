@@ -11,20 +11,29 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   secret: process.env.NEXTAUTH_SECRET,
   session: { strategy: "jwt" },
   callbacks: {
-    async jwt({ token, user }) {
-      // On first login
-      if (user) {
-        token.googleId = user.id
+    async jwt({ token, user, account }) {
+      // if (user) {
+      //   token.googleId = user.id
+      //   token.image = user.image
+      //   token.email = user.email
+      //   token.name = user.name
+      // }
+
+      if (account?.provider === "google") {
+        token.googleId = account.providerAccountId
+        token.email = user.email
+        token.name = user.name
         token.image = user.image
       }
-
-      // Retry logic (IMPORTANT)
-      if (!token.backendToken && token.googleId) {
-        try {
-          const res = await fetch(`${process.env.BACKEND_URL}/api/auth/token`, {
+        if (!token.backendToken && token.googleId) {
+          const res = await fetch(`${process.env.BACKEND_URL}/auth/token`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ google_id: token.googleId }),
+            body: JSON.stringify({
+              google_id: token.googleId,
+              email: token.email,
+              name: token.name,
+            }),
           })
 
           if (res.ok) {
@@ -32,21 +41,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             token.backendToken = data.token
             token.backendUserId = data.user_id
           } else {
-            console.error("Backend token fetch failed", await res.text())
+            console.error(await res.text())
           }
-        } catch (err) {
-          console.error("Fetch error:", err)
         }
-      }
 
-      return token
-    },
+        return token
+      },
     async session({ session, token }) {
-      session.user.googleId = token.googleId
-      session.backendToken = token.backendToken
-      session.backendUserId = token.backendUserId
-      return session
+        session.user.googleId = token.googleId
+        session.backendToken = token.backendToken
+        session.backendUserId = token.backendUserId
+        return session
+      },
     },
-  },
-  pages: { signIn: "/login" },
-})
+    pages: { signIn: "/login" },
+  })

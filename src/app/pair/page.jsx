@@ -14,6 +14,7 @@ export default function PairPage() {
   const authHeader = session?.backendToken
     ? { Authorization: `Bearer ${session.backendToken}` }
     : {}
+
   if (status === "loading") return null
   if (!session) { router.push("/login"); return null }
 
@@ -28,7 +29,10 @@ export default function PairPage() {
         `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/pair/claim`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeader },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session?.backendToken}`,
+          },
           body: JSON.stringify({ code: code.toUpperCase() }),
         }
       )

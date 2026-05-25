@@ -1,5 +1,6 @@
 import { Providers } from "@/components/Providers"
 import "@/app/globals.css"
+import { Suspense } from "react"
 
 export const metadata = {
   title: "CloudClock",
@@ -16,7 +17,11 @@ export default function RootLayout({ children }) {
         />
       </head>
       <body>
-        <Providers>{children}</Providers>
+        <Providers>
+          <Suspense fallback={null}>
+            {children}
+          </Suspense>
+        </Providers>
       </body>
     </html>
   )

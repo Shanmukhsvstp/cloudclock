@@ -43,7 +43,9 @@ export default function Home() {
   const loadDevices = useCallback(async () => {
     if (!googleId) return
     try {
-      const data = await fetch(`${API}/api/devices?google_id=${googleId}`).then(r => r.json())
+      const data = await fetch(`${API}/api/devices`, {
+        headers: { Authorization: `Bearer ${session?.backendToken}` },
+      }).then(r => r.json())
       const list = Array.isArray(data) ? data : []
       setDevices(list)
       if (!deviceId && list.length > 0) setDeviceId(list[0].id)
@@ -53,7 +55,9 @@ export default function Home() {
   const loadAlarms = useCallback(async () => {
     if (!deviceId || !googleId) return
     try {
-      const data = await fetch(`${API}/api/alarms/${deviceId}?google_id=${googleId}`).then(r => r.json())
+      const data = await fetch(`${API}/api/alarms/${deviceId}`, {
+        headers: { Authorization: `Bearer ${session?.backendToken}` },
+      }).then(r => r.json())
       setAlarms(Array.isArray(data) ? data : [])
     } catch { setAlarms([]) }
   }, [deviceId, googleId])
@@ -72,7 +76,7 @@ export default function Home() {
   useEffect(() => { loadAlarms() }, [loadAlarms])
 
   async function buzzer(state) {
-    await fetch(`${API}/api/buzzer?google_id=${googleId}`, {
+    await fetch(`${API}/api/buzzer`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeader },
       body: JSON.stringify({ device_id: deviceId, state }),
@@ -81,7 +85,7 @@ export default function Home() {
   }
 
   async function createAlarm() {
-    await fetch(`${API}/api/alarms?google_id=${googleId}`, {
+    await fetch(`${API}/api/alarms`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeader },
       body: JSON.stringify({
@@ -97,7 +101,7 @@ export default function Home() {
   }
 
   async function deleteAlarm(id) {
-    await fetch(`${API}/api/alarms/${id}?google_id=${googleId}`, {
+    await fetch(`${API}/api/alarms/${id}`, {
       method: "DELETE",
       headers: { ...authHeader },
     })
