@@ -24,7 +24,7 @@ export default function Home() {
 
   const [toast, setToast] = useState("")
   const [toastVisible, setToastVisible] = useState(false)
-  
+
 
   const backendToken = session?.backendToken
   const authHeader = backendToken ? { Authorization: `Bearer ${backendToken}` } : {}
@@ -284,6 +284,7 @@ export default function Home() {
         <DeviceSettingsModal
           device={settingsDevice}
           googleId={googleId}
+          backendToken={backendToken}
           onClose={() => setSettingsDevice(null)}
           onSaved={updated => {
             setDevices(prev => prev.map(d => d.id === updated.id ? updated : d))

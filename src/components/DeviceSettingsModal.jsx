@@ -3,7 +3,7 @@ import { useState, useEffect } from "react"
 
 const TIMEZONES = Intl.supportedValuesOf("timeZone")
 
-export default function DeviceSettingsModal({ device, googleId, onClose, onSaved }) {
+export default function DeviceSettingsModal({ device, googleId, backendToken, onClose, onSaved }) {
   const [hourFormat, setHourFormat] = useState(device.hour_format ?? 24)
   const [timezone, setTimezone] = useState(device.timezone ?? "UTC")
   const [saving, setSaving] = useState(false)
