@@ -1,5 +1,0 @@
-dependencies:
-  lovyan03/LovyanGFX: "^1.1.12"
-  espressif/mdns: "*"
-  espressif/esp_websocket_client: "*"
-  cJSON: "*"
